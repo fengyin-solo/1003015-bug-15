@@ -2,7 +2,7 @@
   <section class="page" data-module="tower">
     <header class="page-head">
       <div>
-        <h2>铁塔管理管理</h2>
+        <h2>铁塔管理</h2>
         <p class="page-desc">维护铁塔，围绕铁塔编号、铁塔类型、设计高度、平台数量做登记、筛选与状态流转。</p>
       </div>
       <div class="page-actions">
@@ -19,9 +19,16 @@
     </div>
 
     <form class="filter-bar" @submit.prevent="reload">
-      <label v-for="field in filterFields" :key="field" class="filter-item">
-        <span>{{ field }}</span>
-        <input v-model="filters[field]" :placeholder="`按${field}检索`" />
+      <label class="filter-item">
+        <span>铁塔编号</span>
+        <input v-model="keyword" placeholder="按铁塔编号检索" />
+      </label>
+      <label class="filter-item">
+        <span>铁塔状态</span>
+        <select v-model="statusFilter">
+          <option value="">全部在账状态</option>
+          <option v-for="status in statuses" :key="status" :value="status">{{ status }}</option>
+        </select>
       </label>
       <button class="btn" type="submit">查询</button>
       <button class="btn ghost" type="button" @click="resetFilters">重置条件</button>
@@ -36,7 +43,10 @@
       </thead>
       <tbody>
         <tr v-for="row in rows" :key="String(row.id)">
-          <td v-for="column in columns" :key="column">{{ row[column] ?? '—' }}</td>
+          <td v-for="column in columns" :key="column">
+            <span v-if="isMissing(row, column)" class="missing-text">缺「{{ column }}」</span>
+            <template v-else>{{ row[column] ?? '—' }}</template>
+          </td>
           <td class="row-actions">
             <button
               v-for="action in actions"
@@ -67,27 +77,46 @@ import { onMounted, ref } from 'vue'
 
 import { request } from '@/api/client'
 
-type Row = Record<string, string | number | null>
+type Row = Record<string, string | number | string[] | null>
 
 const ENDPOINT = '/api/tower'
 const columns = ["铁塔编号", "铁塔类型", "设计高度", "平台数量", "所属站点", "建成年份", "上次检测", "铁塔状态"]
 const actions = ["登记倾斜", "防腐处理", "拆塔完成"]
 const statuses = ["正常", "倾斜超标", "锈蚀", "已拆除"]
-const stats = [{"label": "正常铁塔", "value": 0}, {"label": "倾斜铁塔", "value": 0}, {"label": "锈蚀铁塔", "value": 0}]
 
 const rows = ref<Row[]>([])
 const total = ref(0)
+const stats = ref([
+  { label: '正常铁塔', value: 0 },
+  { label: '倾斜铁塔', value: 0 },
+  { label: '锈蚀铁塔', value: 0 },
+])
 const errorMessage = ref('')
-const filters = ref<Record<string, string>>({})
-const filterFields = columns.slice(0, 3)
+const keyword = ref('')
+const statusFilter = ref('')
+
+function currentQuery(): URLSearchParams {
+  const params = new URLSearchParams()
+  if (keyword.value.trim()) params.set('keyword', keyword.value.trim())
+  if (statusFilter.value) params.set('status', statusFilter.value)
+  return params
+}
+
+function isMissing(row: Row, column: string): boolean {
+  const missing = row['缺失字段']
+  return Array.isArray(missing) && missing.includes(column)
+}
 
 function resetFilters() {
-  filters.value = {}
+  keyword.value = ''
+  statusFilter.value = ''
   void reload()
 }
 
 function exportRows() {
-  window.open(`${ENDPOINT}/export`, '_blank')
+  // 导出带上当前筛选条件，行数才能和页面总数对得上
+  const query = currentQuery().toString()
+  window.open(`${ENDPOINT}/export${query ? `?${query}` : ''}`, '_blank')
 }
 
 function openCreate() {
@@ -101,8 +130,9 @@ async function runAction(action: string, row: Row) {
       method: 'POST',
       body: JSON.stringify({ action }),
     })
-    if (!response.ok) {
-      throw new Error('铁塔管理动作未生效，请稍后重试')
+    const payload = (await response.json()) as { ok?: boolean; message?: string; detail?: string }
+    if (!response.ok || !payload.ok) {
+      throw new Error(payload.message ?? payload.detail ?? '铁塔管理动作未生效，请稍后重试')
     }
     await reload()
   } catch (error) {
@@ -112,15 +142,27 @@ async function runAction(action: string, row: Row) {
 
 async function reload() {
   errorMessage.value = ''
-  const query = new URLSearchParams(filters.value as Record<string, string>).toString()
+  const query = currentQuery().toString()
   try {
-    const response = await request(`${ENDPOINT}?${query}`)
-    if (!response.ok) {
+    const [listResponse, summaryResponse] = await Promise.all([
+      request(`${ENDPOINT}?${query}`),
+      request(`${ENDPOINT}/summary`),
+    ])
+    if (!listResponse.ok) {
       throw new Error('铁塔列表读取失败')
     }
-    const payload = await response.json()
+    const payload = (await listResponse.json()) as { items?: Row[]; total?: number }
     rows.value = payload.items ?? []
     total.value = payload.total ?? rows.value.length
+    if (summaryResponse.ok) {
+      const summary = (await summaryResponse.json()) as { counts?: Record<string, number> }
+      const counts = summary.counts ?? {}
+      stats.value = [
+        { label: '正常铁塔', value: counts['正常'] ?? 0 },
+        { label: '倾斜铁塔', value: counts['倾斜超标'] ?? 0 },
+        { label: '锈蚀铁塔', value: counts['锈蚀'] ?? 0 },
+      ]
+    }
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '铁塔管理列表读取失败'
   }
@@ -128,3 +170,10 @@ async function reload() {
 
 onMounted(reload)
 </script>
+
+<style scoped>
+.missing-text {
+  color: #b42318;
+  font-size: 12px;
+}
+</style>
