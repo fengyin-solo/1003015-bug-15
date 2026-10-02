@@ -60,6 +60,6 @@ def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
 
 @router.get("/export")
 def export_entries() -> dict[str, Any]:
-    """导出铁塔管理清单：返回当前过滤条件下的全量数据。"""
+    """导出铁塔管理清单：与列表默认口径一致（不含已拆除铁塔），全量字段完整，行数与页面总数对得上。"""
     items, total = service.list_entries(page=1, size=10000)
     return {"module": "tower", "total": total, "items": items}

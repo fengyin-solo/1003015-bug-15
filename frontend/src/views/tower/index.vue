@@ -18,6 +18,15 @@
       </article>
     </div>
 
+    <form v-if="creating" class="filter-bar" @submit.prevent="submitCreate">
+      <label v-for="field in registerFields" :key="field" class="filter-item">
+        <span>{{ field }}</span>
+        <input v-model="formValues[field]" :placeholder="`请输入${field}`" />
+      </label>
+      <button class="btn primary" type="submit">提交登记</button>
+      <button class="btn ghost" type="button" @click="creating = false">取消</button>
+    </form>
+
     <form class="filter-bar" @submit.prevent="reload">
       <label v-for="field in filterFields" :key="field" class="filter-item">
         <span>{{ field }}</span>
@@ -36,7 +45,12 @@
       </thead>
       <tbody>
         <tr v-for="row in rows" :key="String(row.id)">
-          <td v-for="column in columns" :key="column">{{ row[column] ?? '—' }}</td>
+          <td v-for="column in columns" :key="column">
+            <template v-if="column === '上次检测' && isMissing(row, column)">
+              <span class="error-text">缺{{ column }}</span>
+            </template>
+            <template v-else>{{ formatCell(row, column) }}</template>
+          </td>
           <td class="row-actions">
             <button
               v-for="action in actions"
@@ -56,23 +70,24 @@
     </table>
 
     <footer class="page-foot">
-      <span>共 {{ total }} 条铁塔管理记录</span>
+      <span>共 {{ total }} 条铁塔管理记录（不含已拆除）</span>
       <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
     </footer>
   </section>
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, reactive, ref } from 'vue'
 
 import { request } from '@/api/client'
 
-type Row = Record<string, string | number | null>
+type Row = Record<string, string | number | string[] | null>
 
 const ENDPOINT = '/api/tower'
 const columns = ["铁塔编号", "铁塔类型", "设计高度", "平台数量", "所属站点", "建成年份", "上次检测", "铁塔状态"]
+// 与后端 REGISTER_FIELDS / 必填口径保持一致：上次检测是必填项。
+const registerFields = ["铁塔编号", "铁塔类型", "设计高度", "平台数量", "所属站点", "建成年份", "上次检测"]
 const actions = ["登记倾斜", "防腐处理", "拆塔完成"]
-const statuses = ["正常", "倾斜超标", "锈蚀", "已拆除"]
 const stats = [{"label": "正常铁塔", "value": 0}, {"label": "倾斜铁塔", "value": 0}, {"label": "锈蚀铁塔", "value": 0}]
 
 const rows = ref<Row[]>([])
@@ -80,6 +95,9 @@ const total = ref(0)
 const errorMessage = ref('')
 const filters = ref<Record<string, string>>({})
 const filterFields = columns.slice(0, 3)
+
+const creating = ref(false)
+const formValues = reactive<Record<string, string>>({})
 
 function resetFilters() {
   filters.value = {}
@@ -91,7 +109,42 @@ function exportRows() {
 }
 
 function openCreate() {
-  errorMessage.value = '铁塔登记入口尚未接入审批流'
+  for (const field of registerFields) {
+    formValues[field] = ''
+  }
+  errorMessage.value = ''
+  creating.value = true
+}
+
+async function submitCreate() {
+  errorMessage.value = ''
+  try {
+    const response = await request(ENDPOINT, {
+      method: 'POST',
+      body: JSON.stringify({ values: { ...formValues } }),
+    })
+    const payload = await response.json().catch(() => null)
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.message ?? '铁塔登记未生效，请稍后重试')
+    }
+    creating.value = false
+    await reload()
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '铁塔登记失败'
+  }
+}
+
+function isMissing(row: Row, column: string): boolean {
+  const missing = row['缺项']
+  return Array.isArray(missing) ? missing.includes(column) : false
+}
+
+function formatCell(row: Row, column: string): string | number {
+  const value = row[column]
+  if (value === null || value === undefined || value === '') {
+    return '—'
+  }
+  return value as string | number
 }
 
 async function runAction(action: string, row: Row) {
@@ -101,8 +154,10 @@ async function runAction(action: string, row: Row) {
       method: 'POST',
       body: JSON.stringify({ action }),
     })
-    if (!response.ok) {
-      throw new Error('铁塔管理动作未生效，请稍后重试')
+    const payload = await response.json().catch(() => null)
+    // 状态越级/回退被拦下时接口仍返回 200 + ok=false，要把后端原因显示出来。
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.message ?? '铁塔管理动作未生效，请稍后重试')
     }
     await reload()
   } catch (error) {
